@@ -43,6 +43,7 @@ textarea.input{min-height:96px;resize:vertical;line-height:1.55}
 .login-card{width:min(420px,100%);background:var(--sheet);border:1px solid var(--rule);border-radius:var(--r);padding:32px 28px;display:grid;gap:16px;justify-items:start}
 .login-card h1{margin:0;font:700 32px/1.25 var(--hand)}
 .login-card p{margin:0;color:var(--muted)}
+.g-btn{gap:10px;padding:0 18px;border-radius:999px;border-color:#dadce0;background:#fff;color:#3c4043;font-weight:500}
 .login-msg{color:var(--late);font-weight:600}
 .login-rail{width:120px;display:grid;gap:7px}
 .login-rail .track{height:5px}

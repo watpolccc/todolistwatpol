@@ -88,12 +88,11 @@ const isOpen = t => !CLOSED.includes(t.status);
 /* ───────── เข้าสู่ระบบ ───────── */
 let idToken = null, tokenExp = 0, waiters = [], gsiTimer = null, booting = false;
 
+const jwtPayload = tok => JSON.parse(atob(tok.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+
 function setToken(tok) {
   idToken = tok;
-  try {
-    const payload = JSON.parse(atob(tok.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
-    tokenExp = payload.exp || 0;
-  } catch (_) { tokenExp = 0; }
+  try { tokenExp = jwtPayload(tok).exp || 0; } catch (_) { tokenExp = 0; }
   store.set('session', TOKEN_KEY, tok);
 }
 
@@ -102,10 +101,51 @@ function dropSession() {
   idToken = null; S.booted = S.synced = false;
   clearTimeout(cacheTimer);
   store.del('local', CACHE_KEY);
+  store.del('local', 'wp.redir');
+  store.del('local', 'wp.hint');
   store.del('session', TOKEN_KEY);
 }
 
+/* ───────── เข้าสู่ระบบแบบเปิดหน้า Google เต็มหน้า ─────────
+   ปุ่ม Google ปกติเปิดหน้าต่างซ้อน ซึ่งใช้ไม่ได้บน iPhone บางเบราว์เซอร์ ทางนี้พาไปหน้า Google แล้วกลับมาพร้อมโทเค็นใน # ของที่อยู่
+   ต้องเพิ่ม REDIRECT_URI ใน Authorized redirect URIs ของ OAuth client ก่อนจึงจะใช้ได้ */
+const REDIRECT_URI = location.origin + location.pathname.replace(/index\.html$/, '');
+const IN_LINE = /\bLine\//i.test(navigator.userAgent);
+// มือถือและแท็บเล็ตใช้ทางนี้ทางเดียว คอมพิวเตอร์ใช้ปุ่ม Google ปกติ หน้าเข้าสู่ระบบจึงมีปุ่มเดียวเสมอ
+const MOBILE = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
+const IN_APP = IN_LINE || /FBAN|FBAV|Instagram|MicroMessenger/i.test(navigator.userAgent);
+
+function redirectLogin(silent) {
+  const nonce = Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('');
+  store.set('session', 'wp.nonce', nonce);
+  const q = new URLSearchParams({ client_id: CONFIG.CLIENT_ID, redirect_uri: REDIRECT_URI, response_type: 'id_token', scope: 'openid email', nonce, state: nonce });
+  const hint = store.get('local', 'wp.hint');
+  if (hint) q.set('login_hint', hint);
+  // silent: ต่ออายุเงียบ ๆ ตอนเปิดหน้า ถ้า Google ต้องถามอะไรจะส่งกลับมาเป็น error แทนการขึ้นหน้าจอ
+  if (silent) q.set('prompt', 'none');
+  location.assign('https://accounts.google.com/o/oauth2/v2/auth?' + q);
+}
+
+// อ่านผลที่ Google ส่งกลับมาใน # แล้วลบออกจากที่อยู่ คืน 'ok' | 'silent' (ต่ออายุเงียบไม่ได้) | 'error' | '' (ไม่ได้กลับมาจาก Google)
+function takeRedirectResult() {
+  if (!/(^#|&)(id_token|error)=/.test(location.hash)) return '';
+  const p = new URLSearchParams(location.hash.slice(1));
+  history.replaceState(null, '', location.pathname + location.search);
+  const nonce = store.get('session', 'wp.nonce');
+  store.del('session', 'wp.nonce');
+  const tok = p.get('id_token');
+  if (!tok) return /_required$/.test(p.get('error') || '') ? 'silent' : 'error';
+  try {
+    if (!nonce || p.get('state') !== nonce || jwtPayload(tok).nonce !== nonce) return 'error';
+  } catch (_) { return 'error'; }
+  setToken(tok);
+  store.set('local', 'wp.redir', true);
+  store.del('session', 'wp.tried');
+  return 'ok';
+}
+
 function initGsi() {
+  if (MOBILE) return;
   google.accounts.id.initialize({
     client_id: CONFIG.CLIENT_ID,
     callback: onCredential,
@@ -142,7 +182,7 @@ function showLogin(msg, overlay) {
   box.classList.toggle('overlay', !!overlay);
   $('#login-msg').textContent = msg || '';
   box.hidden = false;
-  try { google.accounts.id.prompt(); } catch (_) {}
+  if (!MOBILE) try { google.accounts.id.prompt(); } catch (_) {}
 }
 function hideLogin() { $('#login').hidden = true; }
 
@@ -217,6 +257,7 @@ async function boot() {
   try {
     const d = await fetchLoad();
     S.me = d.me; S.booted = S.synced = true;
+    if (store.get('local', 'wp.redir')) store.set('local', 'wp.hint', S.me.email);
     paint();
   } catch (e) {
     if (e.silent) return;
@@ -1126,7 +1167,16 @@ document.addEventListener('visibilitychange', () => {
 
 /* ───────── เริ่มทำงาน: แสดงข้อมูลที่เก็บไว้ก่อน แล้วอัปเดตตามหลัง ───────── */
 $('#today-line').textContent = `${TH_DAYNAME[new Date().getDay()]}ที่ ${thaiDateY(todayISO())}`;
-const savedToken = store.get('session', TOKEN_KEY);
+// เบราว์เซอร์ในแอป LINE เข้าสู่ระบบ Google ไม่ได้ ที่อยู่ที่มี openExternalBrowser=1 จะทำให้ LINE เปิดในเบราว์เซอร์ของเครื่องแทน
+if (IN_LINE && !/[?&]openExternalBrowser=1/.test(location.search)) location.replace(REDIRECT_URI + '?openExternalBrowser=1');
+$('#login-inapp').hidden = !IN_APP;
+$('#b-redirect').hidden = !MOBILE;
+$('#gsi-btn').hidden = MOBILE;
+$('#b-redirect').onclick = () => redirectLogin(false);
+
+const back = takeRedirectResult();
+if (back === 'error') $('#login-msg').textContent = 'เข้าสู่ระบบไม่สำเร็จ ลองอีกครั้ง';
+const savedToken = back === 'ok' ? null : store.get('session', TOKEN_KEY);
 if (savedToken) {
   setToken(savedToken);
   if (Date.now() / 1000 >= tokenExp - 60) idToken = null;
@@ -1141,3 +1191,8 @@ if (cached && cached.me && Array.isArray(cached.tasks)) {
   setSync('กำลังอัปเดตข้อมูล…');
 }
 if (idToken) boot();
+else if (!back && !IN_APP && store.get('local', 'wp.redir') && !store.get('session', 'wp.tried')) {
+  // เคยเข้าสู่ระบบแบบเปิดหน้า Google ไว้ ลองต่ออายุเงียบ ๆ หนึ่งครั้งต่อการเปิดแท็บ
+  store.set('session', 'wp.tried', true);
+  redirectLogin(true);
+} else if (S.booted && (MOBILE || back === 'silent')) showLogin('เข้าสู่ระบบเพื่ออัปเดตข้อมูล', true);
