@@ -28,6 +28,7 @@ const ICON = {
   send: '<path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/>',
   gear: '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
   chev: '<path d="m9 18 6-6-6-6"/>',
+  done: '<circle cx="12" cy="12" r="10"/><path d="m8 12 3 3 5-6"/>',
   ban: '<circle cx="12" cy="12" r="10"/><path d="m4.9 4.9 14.2 14.2"/>',
   pencil: '<path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>',
 };
@@ -62,7 +63,7 @@ function normRange(start, due) {
 const savedMsg = (task, start, ok) => !start || task.start === start ? ok : 'บันทึกแล้ว แต่ระบบหลังบ้านยังไม่เก็บวันเริ่ม ต้องอัปเดต Apps Script ก่อน';
 
 /* ───────── เก็บข้อมูลล่าสุดไว้ในเครื่อง เพื่อเปิดหน้าได้ทันที ───────── */
-const CACHE_KEY = 'wp.load.v2', TOKEN_KEY = 'wp.token';
+const CACHE_KEY = 'wp.load.v2', TOKEN_KEY = 'wp.token', ADMIN_KEY = 'wp.admin', LINE_KEY = 'wp.line';
 const store = {
   get(kind, k) { try { return JSON.parse(window[kind + 'Storage'].getItem(k)); } catch (_) { return null; } },
   set(kind, k, v) { try { window[kind + 'Storage'].setItem(k, JSON.stringify(v)); } catch (_) {} },
@@ -73,11 +74,13 @@ function queueCache() {
   if (S.termPicked || !S.me) return;
   clearTimeout(cacheTimer);
   cacheTimer = setTimeout(() => store.set('local', CACHE_KEY, {
-    me: S.me, users: S.users, tasks: S.tasks, terms: S.terms, currentTerm: S.currentTerm, term: S.term, tagColors: S.tagColors,
+    me: S.me, users: S.users, tasks: S.tasks.filter(t => !t.pending), terms: S.terms, currentTerm: S.currentTerm, term: S.term, tagColors: S.tagColors,
   }), 400);
 }
-S.foldX = store.get('local', 'wp.foldx') !== false;
-const setSync = msg => { $('#sync').textContent = msg; };
+// ช่องที่พับไว้ จำไว้ในเครื่อง เริ่มต้นพับเฉพาะช่องยกเลิก
+S.fold = Object.assign({ 'เสร็จสิ้น': false, 'ยกเลิก': true }, store.get('local', 'wp.fold'));
+let writes = 0; // จำนวนคำขอบันทึกที่ยังส่งอยู่เบื้องหลัง
+const setSync = msg => { $('#sync').textContent = msg || (writes ? 'กำลังบันทึก…' : ''); };
 
 /* ───────── ผู้ใช้ ───────── */
 const userOf = e => S.users.find(u => u.email === e) || { email: e, nick: e.split('@')[0], name: '', active: false };
@@ -101,6 +104,9 @@ function dropSession() {
   idToken = null; S.booted = S.synced = false;
   clearTimeout(cacheTimer);
   store.del('local', CACHE_KEY);
+  store.del('local', ADMIN_KEY);
+  store.del('local', LINE_KEY);
+  S.admin = S.line = null;
   store.del('local', 'wp.redir');
   store.del('local', 'wp.hint');
   store.del('session', TOKEN_KEY);
@@ -227,7 +233,8 @@ async function api(action, data) {
 }
 
 function applyLoad(d) {
-  S.users = d.users; S.tasks = d.tasks;
+  // งานที่เพิ่งเพิ่มและยังส่งไม่ถึงเซิร์ฟเวอร์ เก็บไว้บนกระดานต่อ
+  S.users = d.users; S.tasks = d.tasks.concat(S.tasks.filter(t => t.pending));
   S.terms = d.terms; S.currentTerm = d.currentTerm; S.term = d.term;
   S.tagColors = d.tagColors || {};
 }
@@ -259,6 +266,8 @@ async function boot() {
     S.me = d.me; S.booted = S.synced = true;
     if (store.get('local', 'wp.redir')) store.set('local', 'wp.hint', S.me.email);
     paint();
+    prefetchNotes();
+    prefetchAdmin();
   } catch (e) {
     if (e.silent) return;
     if (S.booted) toast(e.message, { error: true });
@@ -272,6 +281,7 @@ async function reload() {
   try {
     await fetchLoad();
     fillFilters(); render();
+    prefetchNotes();
   } catch (e) { toast(e.message, { error: true }); }
   finally { b.disabled = false; setSync(''); }
 }
@@ -372,23 +382,38 @@ function render() {
   const openSort = (a, b) => (a.due || '9999').localeCompare(b.due || '9999') || (P_RANK[a.priority] ?? 2) - (P_RANK[b.priority] ?? 2) || a.createdAt.localeCompare(b.createdAt);
   const doneSort = (a, b) => (b.doneAt || '').localeCompare(a.doneAt || '');
 
-  $('#list').innerHTML = `<div class="board ${S.foldX ? 'fold-x' : ''}">${COLUMNS.map(([status, mk], i) => {
+  const foldVars = COLUMNS.map(([status], i) => (S.fold[status] ? `--c${i + 1}:118px;` : '')).join('');
+  $('#list').innerHTML = `<div class="board" style="${foldVars}">${COLUMNS.map(([status, mk], i) => {
     const closed = CLOSED.includes(status);
     const all = list.filter(t => colOf(t) === status).sort(closed ? doneSort : openSort);
     const items = closed ? all.slice(0, DONE_MAX) : all;
     const empty = i === 0 && !list.length && !filtered ? 'ยังไม่มีงาน กดปุ่มเพิ่มงานเพื่อแปะโน้ตใบแรก' : 'ไม่มีงาน';
     const count = `<span class="n">${all.length}</span>`;
-    // ช่องยกเลิกใช้น้อย พับเป็นแถบแคบไว้ก่อน กดหัวช่องเพื่อกางหรือพับ
-    const foldable = status === 'ยกเลิก', folded = foldable && S.foldX;
+    // ช่องเสร็จสิ้นและยกเลิกพับเป็นแถบแคบได้ กดหัวช่องเพื่อกางหรือพับ
+    const foldable = closed, folded = foldable && S.fold[status];
     const head = foldable
-      ? `<button class="fold-b" type="button" aria-expanded="${!folded}" title="${folded ? 'กางช่องยกเลิก' : 'พับช่องยกเลิก'}" aria-label="${status} ${all.length} งาน"><span class="fold-i">${icon('ban')}</span><span class="fold-t">${status}</span>${count}${icon('chev')}</button>`
+      ? `<button class="fold-b" type="button" data-fold="${status}" aria-expanded="${!folded}" title="${folded ? 'กางช่อง' : 'พับช่อง'}${status}" aria-label="${status} ${all.length} งาน"><span class="fold-i">${icon(status === 'ยกเลิก' ? 'ban' : 'done')}</span><span class="fold-t">${status}</span>${count}${icon('chev')}</button>`
       : status + count;
     return `<section class="col ${folded ? 'is-folded' : ''}" data-status="${status}" style="--mk:${mk}" aria-label="${status} ${all.length} งาน">
       <h2>${head}</h2>
-      ${folded ? '' : items.length ? `<div class="col-notes">${items.map(t => note(t, today)).join('')}</div>` : `<p class="col-empty">${empty}</p>`}
+      ${folded ? minis(all) : items.length ? `<div class="col-notes">${items.map(t => note(t, today)).join('')}</div>` : `<p class="col-empty">${empty}</p>`}
       ${!folded && all.length > items.length ? `<p class="more-note">แสดง ${DONE_MAX} ใบล่าสุดจาก ${all.length} ใบ ใช้ช่องค้นหาเพื่อหางานเก่า</p>` : ''}
     </section>`;
   }).join('')}</div>`;
+  // วาดกระดานใหม่ระหว่างที่กำลังลากอยู่ ให้โน้ตใบที่ลากยังจางเหมือนเดิม
+  if (drag.active) {
+    const n = document.querySelector(`.note[data-id="${CSS.escape(drag.id)}"]`);
+    if (n) n.classList.add('is-dragging');
+  }
+}
+
+// โน้ตใบเล็กในช่องที่พับไว้ แสดงสีตามแท็ก ชี้เพื่อดูชื่องาน (กดไม่ได้ ต้องกางช่องก่อน)
+const MINI_MAX = 12;
+function minis(all) {
+  if (!all.length) return '';
+  const more = all.length - MINI_MAX;
+  return `<div class="minis">${all.slice(0, MINI_MAX).map(t =>
+    `<span class="mini" title="${esc(t.title)}" style="--n:${t.tags.length ? tagColor(t.tags[0]) : NOTE_COLORS[0]}"></span>`).join('')}${more > 0 ? `<p class="minis-more">และอีก ${more}</p>` : ''}</div>`;
 }
 
 function note(t, today) {
@@ -414,7 +439,7 @@ function note(t, today) {
   if (t.noteCount) meta.push(`<span>${icon('note')}${t.noteCount}<span class="sr"> บันทึก</span></span>`);
   t.tags.forEach(tag => meta.push(`<span>#${esc(tag)}</span>`));
 
-  return `<article class="task note ${open ? '' : 'is-done'}" data-id="${esc(t.id)}" style="--n:${t.tags.length ? tagColor(t.tags[0]) : NOTE_COLORS[0]}">
+  return `<article class="task note ${open ? '' : 'is-done'} ${t.pending ? 'is-pending' : ''}" data-id="${esc(t.id)}" style="--n:${t.tags.length ? tagColor(t.tags[0]) : NOTE_COLORS[0]}">
     <button class="check" data-act="toggle" aria-label="${open ? 'ปิดงาน' : 'เปิดงานอีกครั้ง'} ${esc(t.title)}">${icon('check')}</button>
     <button class="open" data-act="open"><span class="when">${when}</span><span class="t-title">${esc(t.title)}</span><span class="t-meta">${meta.join('')}</span></button>
   </article>`;
@@ -431,7 +456,8 @@ function upsert(task) {
   else S.tasks.push(Object.assign({ noteCount: 0 }, task));
 }
 
-const saving = new Map();
+const saving = new Map();   // งานที่กำลังบันทึกสถานะ → สถานะที่เซิร์ฟเวอร์ยืนยันล่าสุด
+const spawned = new Map();  // งานทำซ้ำที่เพิ่งปิด → รหัสงานรอบถัดไปที่ระบบสร้างให้
 
 function toggle(id) {
   const t = S.tasks.find(x => x.id === id);
@@ -441,57 +467,63 @@ function toggle(id) {
 // ย้ายโน้ตไปอีกสถานะ: เปลี่ยนบนหน้าจอทันที แล้วบันทึกเบื้องหลัง ถ้าบันทึกไม่สำเร็จจึงย้ายกลับ
 async function moveTo(id, status) {
   const t = S.tasks.find(x => x.id === id);
-  if (!t || t.status === status || !STATUS.includes(status) || saving.has(id)) return;
-  const prev = { status: t.status, doneAt: t.doneAt, doneBy: t.doneBy };
+  if (!t || t.status === status || !STATUS.includes(status)) return;
+  const from = t.status;
   const closing = CLOSED.includes(status);
   const d = new Date();
 
+  // จำสถานะที่เซิร์ฟเวอร์ยืนยันล่าสุดไว้ก่อนเปลี่ยน เผื่อต้องย้ายกลับเมื่อบันทึกไม่สำเร็จ
+  if (!saving.has(id)) saving.set(id, { base: { status: t.status, doneAt: t.doneAt, doneBy: t.doneBy }, running: false });
   upsert({ id, status, doneAt: closing ? `${todayISO()} ${pad(d.getHours())}:${pad(d.getMinutes())}` : '', doneBy: closing ? S.me.email : '' });
   render();
-  const job = api('setStatus', { id, status });
-  saving.set(id, job);
+  toast(status === 'เสร็จสิ้น' ? 'ปิดงานแล้ว' : `ย้ายไปช่อง${status}แล้ว`, { action: 'เลิกทำ', onAction: () => moveTo(id, from) });
+  pushStatus(id);
+}
 
-  const undo = {
-    action: 'เลิกทำ',
-    onAction: async () => {
-      upsert(Object.assign({ id }, prev));
-      render();
-      toast('ย้ายกลับแล้ว');
-      const r = await job.catch(() => null);
-      if (!r) return;
-      if (r.next) { S.tasks = S.tasks.filter(x => x.id !== r.next.id); render(); }
-      const u = await api('setStatus', { id, status: prev.status, removeId: r.next ? r.next.id : '' });
-      upsert(u.task); render();
-    },
-  };
-  toast(status === 'เสร็จสิ้น' ? 'ปิดงานแล้ว' : `ย้ายไปช่อง${status}แล้ว`, undo);
-
+// ส่งสถานะล่าสุดของโน้ตขึ้นเซิร์ฟเวอร์ทีละคำขอ ระหว่างรอผู้ใช้ย้ายโน้ตต่อได้เรื่อย ๆ
+// เมื่อคำขอก่อนหน้าเสร็จ ถ้าสถานะบนหน้าจอเปลี่ยนไปอีก จะส่งเฉพาะสถานะสุดท้าย
+async function pushStatus(id) {
+  const st = saving.get(id);
+  if (!st || st.running) return;
+  st.running = true;
+  writes++; setSync('');
   try {
-    const r = await job;
-    // ผู้ใช้กดเลิกทำไปแล้วระหว่างรอ ไม่ต้องทับด้วยผลเดิม
-    const cur = S.tasks.find(x => x.id === id);
-    if (cur && cur.status === status) {
-      upsert(r.task);
+    for (;;) {
+      const t = S.tasks.find(x => x.id === id);
+      if (!t || t.status === st.base.status) break;
+      const want = t.status;
+      // ออกจากช่องเสร็จสิ้นของงานทำซ้ำ: ลบรอบถัดไปที่เพิ่งสร้างทิ้งด้วย
+      const removeId = want !== 'เสร็จสิ้น' && spawned.get(id) || '';
+      if (removeId) { S.tasks = S.tasks.filter(x => x.id !== removeId); spawned.delete(id); render(); }
+      const r = await api('setStatus', { id, status: want, removeId });
+      st.base = { status: r.task.status, doneAt: r.task.doneAt, doneBy: r.task.doneBy };
       if (r.next) {
+        spawned.set(id, r.next.id);
         upsert(r.next);
-        toast(`ปิดงานแล้ว และสร้างรอบถัดไป ${thaiDate(r.next.due)}`, undo);
+        toast(`ปิดงานแล้ว และสร้างรอบถัดไป ${thaiDate(r.next.due)}`);
       }
+      // รับเฉพาะสถานะจากคำตอบ ช่องอื่นอาจมีการแก้ไขที่ยังส่งไม่ถึงเซิร์ฟเวอร์
+      const cur = S.tasks.find(x => x.id === id);
+      if (cur && cur.status === want) upsert(Object.assign({ id }, st.base));
+      render();
     }
-    render();
   } catch (e) {
-    upsert(Object.assign({ id }, prev));
+    upsert(Object.assign({ id }, st.base));
     render();
+    if (openTaskId === id && $('#f-status')) $('#f-status').value = st.base.status;
     toast(`บันทึกไม่สำเร็จ จึงย้ายกลับให้แล้ว: ${e.message}`, { error: true });
   } finally {
     saving.delete(id);
+    writes--; setSync('');
+    if (openTaskId === id) loadNotes(id);
   }
 }
 
 /* ───────── แผงรายละเอียด ───────── */
-let lastFocus = null;
+let openTaskId = null; // งานที่เปิดรายละเอียดอยู่
 
 function openDrawer(title, html) {
-  lastFocus = document.activeElement;
+  openTaskId = null;
   $('#dr-title').textContent = title;
   $('#dr-body').innerHTML = html;
   $('#drawer').hidden = false;
@@ -503,10 +535,12 @@ function openDrawer(title, html) {
 
 function closeDrawer() {
   if ($('#drawer').hidden) return;
+  openTaskId = null;
   $('#drawer').hidden = true;
   $('#backdrop').hidden = true;
   document.body.style.overflow = '';
-  lastFocus && lastFocus.focus && lastFocus.focus({ preventScroll: true });
+  // ไม่คืนโฟกัสให้โน้ตที่เปิดแผง โฟกัสที่ค้างจะทำให้โน้ตยกตัวตั้งตรงค้างไว้
+  if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
 }
 
 function options(list, value) {
@@ -568,6 +602,32 @@ function checkFields(f, due) {
   return '';
 }
 
+/* ───────── บันทึกเบื้องหลัง ─────────
+   ทุกการแก้ไขเปลี่ยนบนหน้าจอทันที แล้วส่งขึ้นเซิร์ฟเวอร์ตามหลัง ถ้าส่งไม่สำเร็จจึงเปลี่ยนกลับและแจ้งผู้ใช้ */
+const queues = new Map();
+const nowStamp = () => { const d = new Date(); return `${todayISO()} ${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+
+// คำขอที่ใช้ key เดียวกัน (งานเดียวกัน) ส่งเรียงทีละคำขอตามลำดับที่กด
+function background(key, fn) {
+  writes++; setSync('');
+  const run = (queues.get(key) || Promise.resolve()).then(fn);
+  const tail = run.catch(() => {}).then(() => {
+    if (queues.get(key) === tail) queues.delete(key);
+    writes--; setSync('');
+  });
+  queues.set(key, tail);
+  return run;
+}
+// ปิดแท็บระหว่างที่ยังบันทึกไม่เสร็จ ให้เบราว์เซอร์ถามก่อน
+addEventListener('beforeunload', e => { if (writes) { e.preventDefault(); e.returnValue = ''; } });
+
+// คำตอบจากการแก้ไขงาน: ไม่เอาสถานะมาทับ เพราะโน้ตอาจถูกย้ายช่องไปแล้วระหว่างรอ
+function keepStatus(task) {
+  const o = Object.assign({}, task);
+  delete o.status; delete o.doneAt; delete o.doneBy;
+  return o;
+}
+
 function openNew() {
   const blank = { title: '', assignees: [S.me.email], priority: 'ปกติ', repeat: '', tags: [], source: '', link: '', detail: '', term: S.currentTerm };
   openDrawer('เพิ่มงานใหม่', `
@@ -575,18 +635,33 @@ function openNew() {
     <label class="field">สถานะ<select class="input" id="f-status">${options(STATUS, 'รอดำเนินการ')}</select></label>
     ${rangeFields('', '')}`)}
     <div class="actions"><button class="btn primary" id="b-create">${icon('plus')}เพิ่มงาน</button></div>`);
-  $('#b-create').onclick = async e => {
-    const btn = e.currentTarget;
+  $('#b-create').onclick = () => {
     const f = readFields();
     const rg = normRange($('#f-start').value, $('#f-due').value);
     const msg = rg.error || checkFields(f, rg.due);
     if (msg) return toast(msg, { error: true });
-    btn.disabled = true;
-    try {
-      const r = await api('create', Object.assign(f, { status: $('#f-status').value, start: rg.start, due: rg.due }));
-      upsert(r.task); fillFilters(); render(); closeDrawer();
-      toast(savedMsg(r.task, rg.start, 'เพิ่มงานแล้ว'));
-    } catch (err) { toast(err.message, { error: true }); btn.disabled = false; }
+    const status = $('#f-status').value, closed = CLOSED.includes(status);
+    const payload = Object.assign(f, { status, start: rg.start, due: rg.due });
+
+    // แปะโน้ตบนกระดานทันทีด้วยรหัสชั่วคราว พอเซิร์ฟเวอร์ตอบจึงเปลี่ยนเป็นงานจริง
+    const tmp = 'tmp-' + Date.now().toString(36);
+    const local = Object.assign({ term: S.currentTerm }, payload, {
+      id: tmp, createdBy: S.me.email, createdAt: nowStamp(), doneAt: closed ? nowStamp() : '', doneBy: closed ? S.me.email : '', noteCount: 0, pending: true,
+    });
+    const drop = () => { S.tasks = S.tasks.filter(x => x.id !== tmp); };
+    const send = () => {
+      upsert(local); fillFilters(); render();
+      background(tmp, () => api('create', payload)).then(r => {
+        drop(); upsert(r.task); fillFilters(); render();
+        if (rg.start && r.task.start !== rg.start) toast(savedMsg(r.task, rg.start, ''));
+      }, err => {
+        drop(); fillFilters(); render();
+        toast(`เพิ่มงาน "${f.title}" ไม่สำเร็จ: ${err.message}`, { error: true, action: 'ลองอีกครั้ง', onAction: send });
+      });
+    };
+    closeDrawer();
+    toast('เพิ่มงานแล้ว');
+    send();
   };
 }
 
@@ -610,98 +685,119 @@ function openTask(id) {
     <div class="divider"></div>
     <p class="foot">สร้างโดย ${esc(creator)} เมื่อ ${esc(thaiStamp(t.createdAt))}${t.doneAt ? ` และ${esc(t.status)}โดย ${esc(userOf(t.doneBy).nick)} เมื่อ ${esc(thaiStamp(t.doneAt))}` : ''}</p>
     <div class="actions"><button class="btn danger" id="b-del">${icon('trash')}ลบงานนี้</button></div>`);
-
+  openTaskId = id;
   loadNotes(id);
 
-  $('#f-status').onchange = async e => {
-    const sel = e.currentTarget;
-    sel.disabled = true;
-    try {
-      const r = await api('setStatus', { id, status: sel.value });
-      upsert(r.task);
-      if (r.next) upsert(r.next);
-      render(); loadNotes(id);
-      toast(r.next ? `บันทึกสถานะแล้ว และสร้างรอบถัดไป ${thaiDate(r.next.due)}` : 'บันทึกสถานะแล้ว');
-    } catch (err) { sel.value = t.status; toast(err.message, { error: true }); }
-    sel.disabled = false;
-  };
+  // เปลี่ยนสถานะ: ใช้ทางเดียวกับการลากโน้ต
+  $('#f-status').onchange = e => moveTo(id, e.currentTarget.value);
 
-  // เปลี่ยนช่วงวันทำงานแล้วบันทึกทันที ประวัติการเปลี่ยนกำหนดส่งยังเก็บไว้ในไทม์ไลน์
+  // เปลี่ยนช่วงวันทำงาน ประวัติการเปลี่ยนกำหนดส่งยังเก็บไว้ในไทม์ไลน์
   const startInput = $('#f-start'), dueInput = $('#f-due');
-  startInput.onchange = dueInput.onchange = async () => {
+  startInput.onchange = dueInput.onchange = () => {
     const cur = S.tasks.find(x => x.id === id);
     const curStart = cur.start || '', curDue = cur.due || '';
-    const back = () => { startInput.value = curStart; dueInput.value = curDue; };
     if (startInput.value && !dueInput.value) return toast('ใส่วันกำหนดส่งเพื่อบันทึกช่วงวันทำงาน');
     const rg = normRange(startInput.value, dueInput.value);
-    if (rg.error) { back(); return toast(rg.error, { error: true }); }
+    if (rg.error) { startInput.value = curStart; dueInput.value = curDue; return toast(rg.error, { error: true }); }
     startInput.value = rg.start;
     if (rg.due === curDue && rg.start === curStart) return;
-    startInput.disabled = dueInput.disabled = true;
-    try {
-      upsert((await api('changeDue', { id, due: rg.due, start: rg.start })).task);
-      render(); loadNotes(id);
-      toast(savedMsg(S.tasks.find(x => x.id === id), rg.start, rg.due ? `เปลี่ยนวันทำงานเป็น ${rangeText(rg.start, rg.due)} แล้ว` : 'ยกเลิกกำหนดส่งแล้ว'));
-    } catch (err) { back(); render(); toast(err.message, { error: true }); }
-    startInput.disabled = dueInput.disabled = false;
+    upsert({ id, start: rg.start, due: rg.due });
+    render();
+    toast(rg.due ? `เปลี่ยนวันทำงานเป็น ${rangeText(rg.start, rg.due)} แล้ว` : 'ยกเลิกกำหนดส่งแล้ว');
+    background(id, () => api('changeDue', { id, due: rg.due, start: rg.start })).then(r => {
+      upsert(keepStatus(r.task)); render(); loadNotes(id);
+      if (rg.start && r.task.start !== rg.start) toast(savedMsg(r.task, rg.start, ''));
+    }, err => {
+      upsert({ id, start: curStart, due: curDue }); render();
+      if (openTaskId === id) { $('#f-start').value = curStart; $('#f-due').value = curDue; }
+      toast(`เปลี่ยนวันไม่สำเร็จ จึงเปลี่ยนกลับให้แล้ว: ${err.message}`, { error: true });
+    });
   };
 
-  $('#b-save').onclick = async e => {
-    const btn = e.currentTarget;
+  $('#b-save').onclick = () => {
     const cur = S.tasks.find(x => x.id === id);
     const f = Object.assign(readFields(), { start: cur.start || '' });
     const msg = checkFields(f, cur.due);
     if (msg) return toast(msg, { error: true });
-    btn.disabled = true;
-    try {
-      const r = await api('update', { id, fields: f });
-      upsert(r.task); fillFilters(); render(); loadNotes(id);
-      toast('บันทึกการแก้ไขแล้ว');
-    } catch (err) { toast(err.message, { error: true }); }
-    btn.disabled = false;
+    const before = { id };
+    Object.keys(f).forEach(k => { before[k] = cur[k]; });
+    upsert(Object.assign({ id }, f)); fillFilters(); render();
+    toast('บันทึกการแก้ไขแล้ว');
+    background(id, () => api('update', { id, fields: f })).then(r => {
+      upsert(keepStatus(r.task)); fillFilters(); render(); loadNotes(id);
+    }, err => {
+      upsert(before); fillFilters(); render();
+      toast(`บันทึกการแก้ไขไม่สำเร็จ จึงเปลี่ยนกลับให้แล้ว: ${err.message}`, { error: true });
+    });
   };
 
-  $('#b-note').onclick = async e => {
-    const btn = e.currentTarget;
+  $('#b-note').onclick = () => {
     const text = $('#f-note').value.trim();
     if (!text) return toast('พิมพ์ข้อความก่อนกดเพิ่มบันทึก', { error: true });
-    btn.disabled = true;
-    try {
-      await api('addNote', { id, text });
-      const task = S.tasks.find(x => x.id === id);
-      task.noteCount = (task.noteCount || 0) + 1;
-      $('#f-note').value = '';
-      render(); loadNotes(id);
-    } catch (err) { toast(err.message, { error: true }); }
-    btn.disabled = false;
+    const n = { type: 'บันทึก', text, by: S.me.email, at: nowStamp(), local: true };
+    const bump = d => { const task = S.tasks.find(x => x.id === id); if (task) task.noteCount = Math.max(0, (task.noteCount || 0) + d); };
+    notesCache.set(id, (notesCache.get(id) || []).concat(n));
+    bump(1);
+    $('#f-note').value = '';
+    drawNotes(id); render();
+    background(id, () => api('addNote', { id, text })).then(() => { delete n.local; }, err => {
+      notesCache.set(id, (notesCache.get(id) || []).filter(x => x !== n));
+      bump(-1);
+      drawNotes(id); render();
+      if (openTaskId === id && !$('#f-note').value) $('#f-note').value = text;
+      toast(`เพิ่มบันทึกไม่สำเร็จ: ${err.message}`, { error: true });
+    });
   };
 
-  const del = $('#b-del');
-  if (del) del.onclick = async () => {
+  $('#b-del').onclick = () => {
     if (!confirm(`ลบงาน "${t.title}" และบันทึกทั้งหมดของงานนี้? ลบแล้วกู้คืนไม่ได้`)) return;
-    del.disabled = true;
-    try {
-      await api('remove', { id });
-      S.tasks = S.tasks.filter(x => x.id !== id);
-      fillFilters(); render(); closeDrawer();
-      toast('ลบงานแล้ว');
-    } catch (err) { toast(err.message, { error: true }); del.disabled = false; }
+    const gone = S.tasks.find(x => x.id === id);
+    S.tasks = S.tasks.filter(x => x.id !== id);
+    fillFilters(); render(); closeDrawer();
+    toast('ลบงานแล้ว');
+    background(id, () => api('remove', { id })).catch(err => {
+      if (gone) upsert(gone);
+      fillFilters(); render();
+      toast(`ลบงาน "${t.title}" ไม่สำเร็จ จึงนำกลับมาให้แล้ว: ${err.message}`, { error: true });
+    });
   };
 }
 
+/* ───────── บันทึกความคืบหน้า ─────────
+   เก็บที่โหลดแล้วไว้ในหน่วยความจำ เปิดงานเดิมซ้ำจึงเห็นทันที แล้วค่อยอัปเดตตามหลัง */
+const notesCache = new Map();
+
+function drawNotes(id) {
+  const box = $('#timeline'), notes = notesCache.get(id);
+  if (!box || openTaskId !== id || !notes) return;
+  box.innerHTML = notes.length ? notes.map(n => {
+    const cls = n.type === 'บันทึก' ? 'n-note' : n.type === 'กำหนดส่ง' ? 'n-due' : 'n-sys';
+    return `<li class="${cls}"><div class="who">${esc(userOf(n.by).nick)} เวลา ${esc(thaiStamp(n.at))}</div><div class="txt">${esc(n.text)}</div></li>`;
+  }).join('') : '<li class="n-sys"><span class="txt">ยังไม่มีบันทึก</span></li>';
+}
+
+// บันทึกที่เพิ่งพิมพ์และยังส่งไม่ถึงเซิร์ฟเวอร์ (local) เก็บไว้ต่อท้ายรายการจากเซิร์ฟเวอร์
+const withLocal = (id, notes) => notes.concat((notesCache.get(id) || []).filter(n => n.local));
+
 async function loadNotes(id) {
-  const box = $('#timeline');
-  if (!box) return;
+  drawNotes(id);
   try {
-    const notes = await api('notes', { id });
-    if ($('#timeline') !== box) return;
-    box.innerHTML = notes.length ? notes.map(n => {
-      const cls = n.type === 'บันทึก' ? 'n-note' : n.type === 'กำหนดส่ง' ? 'n-due' : 'n-sys';
-      return `<li class="${cls}"><div class="who">${esc(userOf(n.by).nick)} เวลา ${esc(thaiStamp(n.at))}</div><div class="txt">${esc(n.text)}</div></li>`;
-    }).join('') : '<li class="n-sys"><span class="txt">ยังไม่มีบันทึก</span></li>';
+    notesCache.set(id, withLocal(id, await api('notes', { id })));
+    drawNotes(id);
   } catch (e) {
-    box.innerHTML = `<li class="n-sys"><span class="txt">โหลดบันทึกไม่สำเร็จ: ${esc(e.message)}</span></li>`;
+    const box = $('#timeline');
+    if (box && openTaskId === id && !notesCache.has(id)) box.innerHTML = `<li class="n-sys"><span class="txt">โหลดบันทึกไม่สำเร็จ: ${esc(e.message)}</span></li>`;
   }
+}
+
+// โหลดบันทึกของงานที่ยังไม่ปิดทั้งหมดในคำขอเดียวหลังเปิดหน้า เปิดงานไหนก็เห็นบันทึกทันที
+// หลังบ้านรุ่นเก่ายังไม่มีคำสั่งนี้ ถ้าเรียกไม่ได้ก็ข้ามไป แล้วโหลดทีละงานตอนเปิดเหมือนเดิม
+async function prefetchNotes() {
+  try {
+    const all = await api('notesAll');
+    Object.keys(all).forEach(id => notesCache.set(id, withLocal(id, all[id])));
+    if (openTaskId) drawNotes(openTaskId);
+  } catch (_) {}
 }
 
 /* ───────── ตั้งค่าระบบ (ผู้ดูแล) ───────── */
@@ -719,13 +815,53 @@ async function openAdmin(tab) {
     if (b && S.admin) { adminTab = b.dataset.k; renderAdmin(); }
   };
   markAdminTab();
+  // มีข้อมูลที่โหลดไว้แล้วก็แสดงทันที แล้วอัปเดตตามหลัง
+  if (!S.admin) S.admin = store.get('local', ADMIN_KEY);
+  if (S.admin) renderAdmin();
   try {
-    S.admin = await api('adminData');
-    renderAdmin();
+    setAdmin(await api('adminData'));
   } catch (e) {
-    $('#adm').innerHTML = `<p class="foot">${esc(e.message)}</p>`;
+    if (!S.admin && $('#adm')) $('#adm').innerHTML = `<p class="foot">${esc(e.message)}</p>`;
   }
 }
+
+// รับข้อมูลตั้งค่าจากเซิร์ฟเวอร์ วาดใหม่เฉพาะเมื่อข้อมูลต่างจากที่แสดงอยู่ และผู้ใช้ไม่ได้กำลังกรอกฟอร์ม
+function setAdmin(data) {
+  const same = JSON.stringify(data) === JSON.stringify(S.admin);
+  S.admin = data;
+  store.set('local', ADMIN_KEY, data);
+  const typing = document.activeElement && document.activeElement.closest('#adm') && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
+  if (!same && !typing) renderAdmin();
+}
+
+// ผู้ดูแลระบบ: โหลดข้อมูลตั้งค่าไว้ล่วงหน้าหลังเปิดหน้า กดเฟืองแล้วเห็นทันที
+function prefetchAdmin() {
+  if (!S.me || !S.me.isAdmin) return;
+  if (!S.admin) S.admin = store.get('local', ADMIN_KEY);
+  api('adminData').then(setAdmin, () => {});
+}
+
+// ผลของแต่ละคำสั่งที่แสดงบนหน้าจอทันทีก่อนเซิร์ฟเวอร์ตอบ
+const byKey = k => (a, b) => (a[k] < b[k] ? -1 : a[k] > b[k] ? 1 : 0);
+const ADMIN_LOCAL = {
+  saveUser(A, d) {
+    const u = { email: d.email.toLowerCase(), nick: d.nick, name: d.name, role: d.role, active: d.active };
+    const i = A.users.findIndex(x => x.email === u.email);
+    if (i >= 0) A.users[i] = u; else A.users.push(u);
+  },
+  saveTerm(A, d) {
+    A.terms = A.terms.filter(x => x.name !== (d.original || d.name)).concat({ name: d.name, start: d.start, end: d.end }).sort(byKey('start'));
+    if (d.original && A.currentTerm === d.original) A.currentTerm = d.name;
+  },
+  deleteTerm(A, d) { A.terms = A.terms.filter(x => x.name !== d.name); },
+  saveHoliday(A, d) { A.holidays = A.holidays.filter(h => h.date !== d.date).concat({ date: d.date, name: d.name }).sort(byKey('date')); },
+  deleteHoliday(A, d) { A.holidays = A.holidays.filter(h => h.date !== d.date); },
+  saveSettings(A, d) {
+    A.settings = { webUrl: d.webUrl, dailyHour: +d.dailyHour, weeklyDay: +d.weeklyDay, weeklyHour: +d.weeklyHour, dueSoonDays: +d.dueSoonDays };
+    A.triggersOn = true;
+  },
+  setLineToken(A, d) { A.tokenSet = !!d.token; },
+};
 
 function markAdminTab() {
   document.querySelectorAll('.seg-b').forEach(b => b.setAttribute('aria-selected', String(b.dataset.k === adminTab)));
@@ -737,17 +873,20 @@ function renderAdmin(arg) {
   ({ users: admUsers, terms: admTerms, holidays: admHolidays, notify: admNotify })[adminTab](arg);
 }
 
+// บันทึกการตั้งค่า: เปลี่ยนบนหน้าจอทันที แล้วส่งขึ้นเซิร์ฟเวอร์ตามหลัง ถ้าไม่สำเร็จจึงเปลี่ยนกลับและแจ้ง
 async function adminSave(action, data, btn, msg) {
-  if (btn) btn.disabled = true;
+  const before = JSON.stringify(S.admin);
+  ADMIN_LOCAL[action](S.admin, data);
+  renderAdmin();
+  toast(msg);
   try {
-    S.admin = await api(action, data);
-    renderAdmin();
-    toast(msg);
+    setAdmin(await background('admin', () => api(action, data)));
     reload();
     return true;
   } catch (e) {
-    toast(e.message, { error: true });
-    if (btn) btn.disabled = false;
+    S.admin = JSON.parse(before);
+    renderAdmin();
+    toast(`บันทึกไม่สำเร็จ จึงเปลี่ยนกลับให้แล้ว: ${e.message}`, { error: true });
     return false;
   }
 }
@@ -897,7 +1036,7 @@ function admHolidays() {
     btn.disabled = true;
     try {
       const r = await api('syncHolidays');
-      S.admin = r.admin;
+      setAdmin(r.admin);
       renderAdmin();
       toast(r.added ? `เพิ่มวันหยุด ${r.added} วันแล้ว` : 'วันหยุดในรายการครบแล้ว ไม่มีวันใหม่');
     } catch (err) { toast(err.message, { error: true }); btn.disabled = false; }
@@ -986,12 +1125,26 @@ function admNotify() {
   lineStatus();
 }
 
+// สถานะ LINE ต้องถามเซิร์ฟเวอร์ของ LINE จึงช้า แสดงผลครั้งก่อนไปก่อนแล้วอัปเดตตามหลัง
 async function lineStatus(action) {
+  if (!$('#line-status')) return;
+  if (!S.line) S.line = store.get('local', LINE_KEY);
+  if (S.line) drawLine(S.line);
+  try {
+    S.line = await api(action || 'lineStatus');
+    store.set('local', LINE_KEY, S.line);
+    drawLine(S.line);
+  } catch (e) {
+    const box = $('#line-status');
+    if (box && !S.line) box.innerHTML = `<h3>กลุ่ม LINE</h3><p class="foot">${esc(e.message)}</p>`;
+    else if (action) toast(e.message, { error: true });
+  }
+}
+
+function drawLine(s) {
   const box = $('#line-status');
   if (!box) return;
-  try {
-    const s = await api(action || 'lineStatus');
-    if (!$('#line-status')) return;
+  {
     const parts = ['<h3>กลุ่ม LINE</h3>'];
     if (!s.tokenSet) {
       parts.push('<p class="foot">ใส่รหัสเชื่อมต่อ LINE ด้านบนก่อน</p>');
@@ -1013,8 +1166,6 @@ async function lineStatus(action) {
     box.innerHTML = parts.join('');
     const use = $('#b-use-group');
     if (use) use.onclick = () => { use.disabled = true; lineStatus('useSeenGroup'); };
-  } catch (e) {
-    box.innerHTML = `<h3>กลุ่ม LINE</h3><p class="foot">${esc(e.message)}</p>`;
   }
 }
 
@@ -1030,7 +1181,7 @@ function toast(msg, opt = {}) {
     el.hidden = true;
     try { await opt.onAction(); } catch (e) { toast(e.message, { error: true }); }
   };
-  toastTimer = setTimeout(() => { el.hidden = true; }, opt.action ? 6000 : opt.error ? 5000 : 2500);
+  toastTimer = setTimeout(() => { el.hidden = true; }, opt.action ? (opt.error ? 15000 : 6000) : opt.error ? 6000 : 2500);
 }
 
 /* ───────── เชื่อมเหตุการณ์ ───────── */
@@ -1070,7 +1221,9 @@ function dragPlace() {
 }
 
 function dragStart() {
-  if (!drag.el || !drag.el.isConnected) return dragEnd();
+  // กระดานอาจถูกวาดใหม่ระหว่างกดค้าง (เช่น ผลบันทึกของโน้ตใบก่อนกลับมา) หาโน้ตใบเดิมจากรหัสอีกครั้ง
+  if (drag.el && !drag.el.isConnected) drag.el = document.querySelector(`.note[data-id="${CSS.escape(drag.id)}"]`);
+  if (!drag.el) return dragEnd();
   const r = drag.el.getBoundingClientRect();
   drag.ox = drag.x0 - r.left; drag.oy = drag.y0 - r.top;
   const g = drag.el.cloneNode(true);
@@ -1136,9 +1289,10 @@ $('#list').addEventListener('click', e => { if (drag.justDragged) { e.stopPropag
 $('#f-q').oninput = e => { S.q = e.target.value.trim(); render(); };
 
 $('#list').addEventListener('click', e => {
-  if (e.target.closest('.fold-b')) {
-    S.foldX = !S.foldX;
-    store.set('local', 'wp.foldx', S.foldX);
+  const f = e.target.closest('.fold-b');
+  if (f) {
+    S.fold[f.dataset.fold] = !S.fold[f.dataset.fold];
+    store.set('local', 'wp.fold', S.fold);
     return render();
   }
   const b = e.target.closest('button[data-act]');

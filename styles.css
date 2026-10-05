@@ -78,38 +78,47 @@ main{max-width:1500px;margin:0 auto;padding:14px 24px 72px}
 .chip[aria-pressed="true"]{outline:3px solid var(--ink);outline-offset:2px}
 
 /* ไวท์บอร์ด: แบ่งช่องตามสถานะ เส้นแบ่งเป็นเส้นประแบบขีดด้วยปากกา */
-.board{margin-top:14px;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));min-height:62vh;border:1px solid var(--rule);border-radius:14px;background:var(--sheet) radial-gradient(var(--dot) 1px,transparent 1.6px) 0 0/22px 22px;box-shadow:0 3px 0 var(--rule),0 24px 44px -30px rgba(0,0,0,.5)}
+.board{margin-top:14px;display:grid;grid-template-columns:var(--c1,minmax(0,1fr)) var(--c2,minmax(0,1fr)) var(--c3,minmax(0,1fr)) var(--c4,minmax(0,1fr));min-height:62vh;border:1px solid var(--rule);border-radius:14px;background:var(--sheet) radial-gradient(var(--dot) 1px,transparent 1.6px) 0 0/22px 22px;box-shadow:0 3px 0 var(--rule),0 24px 44px -30px rgba(0,0,0,.5)}
 .col{min-width:0;padding:16px 16px 28px;border-left:2px dashed var(--rule);transition:background-color .16s}
 .col:first-child{border-left:0}
 .col.is-over{background:color-mix(in srgb,var(--mk) 10%,transparent)}
 .col h2{margin:0 0 18px;padding-bottom:4px;border-bottom:4px solid var(--mk);border-radius:0 0 3px 3px;font:700 23px/1.25 var(--hand);display:flex;align-items:baseline;gap:8px}
 .col h2 .n{font:500 15px/1 "IBM Plex Sans Thai",sans-serif;color:var(--muted);font-variant-numeric:tabular-nums}
-.col-notes{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:18px 14px;align-content:start}
+.col-notes{display:grid;align-items:start;grid-template-columns:repeat(auto-fill,168px);gap:18px 14px;align-content:start}
 .col-empty{margin:0;color:var(--muted);font-size:15px}
 /* ช่องยกเลิกพับเป็นแถบแคบได้ ยังลากโน้ตมาวางได้ */
-.board.fold-x{grid-template-columns:repeat(3,minmax(0,1fr)) 68px}
 .fold-b{display:flex;align-items:baseline;gap:8px;width:100%;min-height:44px;margin:-8px 0;padding:0;border:0;background:none;font:inherit;color:inherit;text-align:left}
 .fold-b>svg{align-self:center;margin-left:auto;color:var(--muted);transition:transform .16s}
 .fold-b[aria-expanded="true"]>svg{transform:rotate(180deg)}
 .fold-i{display:none}
 .col.is-folded{padding:16px 8px}
 .col.is-folded h2{margin:0;padding-bottom:8px;justify-content:center}
-.col.is-folded .fold-b{flex-direction:column;align-items:center;gap:4px;margin:0;font-size:19px}
-.col.is-folded .fold-i{display:flex;font-size:25px;color:var(--muted)}
-.col.is-folded .fold-t{display:none}
+.col.is-folded .fold-b{flex-direction:column;align-items:center;gap:2px;margin:0;font-size:17px}
+.col.is-folded .fold-i{display:flex;font-size:24px;color:var(--mk)}
 .col.is-folded .fold-b>svg{margin:2px 0 0}
+/* ช่องที่พับไว้: เรียงโน้ตใบเล็กให้เห็นว่ามีงานอะไรสีไหนอยู่ */
+.minis{display:grid;grid-template-columns:repeat(2,40px);gap:10px 8px;justify-content:center;margin-top:14px}
+.mini{display:block;width:40px;height:40px;background:var(--n);border-radius:1px 1px 1px 7px/1px 1px 1px 2px;box-shadow:0 1px 1px rgba(0,0,0,.14),0 5px 6px -4px rgba(0,0,0,.45);transition:transform .16s,box-shadow .16s}
+.mini:nth-child(odd){transform:rotate(-3deg)}
+.mini:nth-child(even){transform:rotate(2deg)}
+.mini:hover{transform:translateY(-2px);box-shadow:0 1px 1px rgba(0,0,0,.14),0 9px 9px -5px rgba(0,0,0,.5)}
+.minis-more{grid-column:1/-1;margin:0;text-align:center;font-size:14px;color:var(--muted)}
 .logo{flex:none;display:block;width:38px;height:38px}
 .logo svg{display:block;width:100%;height:100%}
 .more-note{margin:16px 0 0;font-size:14px;color:var(--muted)}
 
 /* โพสต์อิท: สีตามแท็กแรกของงาน */
-.note{--tilt:0deg;position:relative;min-height:150px;display:flex;background:var(--n);color:var(--note-ink);border-radius:2px 2px 2px 16px/2px 2px 2px 4px;box-shadow:0 1px 1px rgba(0,0,0,.14),0 10px 14px -8px rgba(0,0,0,.4);transform:rotate(var(--tilt));transition:transform .16s,box-shadow .16s;cursor:grab}
+/* สูงอย่างน้อยเท่าความกว้าง (จัตุรัส) และยาวลงมาได้เมื่อข้อความยาว */
+.note::before{content:"";flex:none;width:0;padding-bottom:100%}
+.note{--tilt:0deg;position:relative;display:flex;background:var(--n);color:var(--note-ink);border-radius:2px 2px 2px 16px/2px 2px 2px 4px;box-shadow:0 1px 1px rgba(0,0,0,.14),0 10px 14px -8px rgba(0,0,0,.4);transform:rotate(var(--tilt));transition:transform .16s,box-shadow .16s;cursor:grab}
 .note:nth-child(3n+1){--tilt:-1.3deg}
 .note:nth-child(3n+2){--tilt:.9deg}
 .note:nth-child(4n){--tilt:-.5deg}
-.note:hover,.note:focus-within{transform:translateY(-3px);box-shadow:0 1px 1px rgba(0,0,0,.14),0 18px 20px -10px rgba(0,0,0,.45);z-index:1}
+.note:hover,.note:has(:focus-visible){transform:translateY(-3px);box-shadow:0 1px 1px rgba(0,0,0,.14),0 18px 20px -10px rgba(0,0,0,.45);z-index:1}
 .note{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
 .note.is-dragging{opacity:.35}
+/* โน้ตที่เพิ่งเพิ่มและยังส่งไม่ถึงเซิร์ฟเวอร์ ยังกดหรือลากไม่ได้ชั่วครู่ */
+.note.is-pending{opacity:.65;pointer-events:none}
 .note.ghost{position:fixed;left:0;top:0;z-index:70;margin:0;pointer-events:none;transition:none;box-shadow:0 2px 2px rgba(0,0,0,.16),0 26px 30px -12px rgba(0,0,0,.5)}
 body.dragging{cursor:grabbing;-webkit-user-select:none;user-select:none}
 .swatches{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
@@ -136,7 +145,7 @@ body.dragging{cursor:grabbing;-webkit-user-select:none;user-select:none}
 .track i{display:block;height:100%;background:rgba(38,36,31,.62)}
 .track.is-late i{background:var(--late)}
 .track.is-today i{background:var(--today)}
-.t-title{font:600 18px/1.4 var(--hand);overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:5;-webkit-box-orient:vertical;overflow:hidden}
+.t-title{font:600 18px/1.4 var(--hand);overflow-wrap:anywhere}
 .note.is-done .t-title{text-decoration:line-through;text-decoration-color:rgba(38,36,31,.5)}
 .t-meta{margin-top:auto;display:flex;flex-wrap:wrap;gap:2px 10px;font-size:14px;line-height:1.5;align-items:center}
 .t-meta>span{display:inline-flex;align-items:center;gap:4px}
@@ -147,7 +156,7 @@ body.dragging{cursor:grabbing;-webkit-user-select:none;user-select:none}
 .note .person i{box-shadow:0 0 0 1.5px rgba(255,255,255,.7)}
 .empty{margin:48px auto;max-width:420px;text-align:center;color:var(--muted)}
 .empty strong{display:block;color:var(--ink);font:600 20px/1.4 var(--hand);margin-bottom:4px}
-.skel{min-height:150px;border-radius:2px;background:linear-gradient(90deg,var(--sunk),var(--rule),var(--sunk));background-size:200% 100%;animation:sh 1.2s infinite linear}
+.skel{aspect-ratio:1;border-radius:2px;background:linear-gradient(90deg,var(--sunk),var(--rule),var(--sunk));background-size:200% 100%;animation:sh 1.2s infinite linear}
 @keyframes sh{to{background-position:-200% 0}}
 
 /* ตั้งค่าระบบ */
@@ -210,20 +219,20 @@ legend{font-size:15px;font-weight:500;color:var(--muted);padding:0;margin-bottom
 .toast.err{background:var(--late);color:var(--sheet)}
 
 @media (min-width:1400px){
-  .col-notes{grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:22px 18px}
-  .note{min-height:180px}
+  .col-notes{grid-template-columns:repeat(auto-fill,196px);gap:22px 18px}
   .open{padding:12px 14px 12px;gap:8px}
   .t-title{font-size:20px}
   .when-d{font-size:16px}
   .when-s,.t-meta{font-size:15px}
 }
 @media (max-width:1180px){
-  .board,.board.fold-x{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .board{grid-template-columns:repeat(2,minmax(0,1fr))}
   .col.is-folded{padding:14px 16px}
   .col.is-folded h2{padding-bottom:4px;justify-content:flex-start}
   .col.is-folded .fold-b{flex-direction:row;align-items:baseline;gap:8px;margin:-8px 0;font-size:inherit}
   .col.is-folded .fold-i{display:none}
-  .col.is-folded .fold-t{display:inline}
+  .minis{grid-template-columns:repeat(auto-fill,40px);justify-content:start}
+  .minis-more{grid-column:auto;align-self:center;white-space:nowrap}
   .col.is-folded .fold-b>svg{margin:0 0 0 auto}
   .col:nth-child(odd){border-left:0}
   .col:nth-child(n+3){border-top:2px dashed var(--rule)}
@@ -238,10 +247,10 @@ legend{font-size:15px;font-weight:500;color:var(--muted);padding:0;margin-bottom
   #b-new{flex:1 1 100%}
   .filters select{max-width:none}
   .search{max-width:none}
-  .board,.board.fold-x{grid-template-columns:minmax(0,1fr);min-height:0}
+  .board{grid-template-columns:minmax(0,1fr);min-height:0}
   .col{border-left:0;padding:14px 12px 22px}
   .col:nth-child(n+2){border-top:2px dashed var(--rule)}
-  .col-notes{grid-template-columns:repeat(2,minmax(0,1fr));gap:16px 12px}
+  .col-notes{grid-template-columns:repeat(2,minmax(0,190px));gap:16px 12px}
   .row2{grid-template-columns:1fr}
 }
 @media (prefers-reduced-motion:reduce){
